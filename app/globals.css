@@ -103,3 +103,24 @@ body {
 .animate-feed-in {
   animation: feed-in 260ms ease-out;
 }
+
+@keyframes goal-pop {
+  0% { transform: scale(0.55); opacity: 0; }
+  18% { transform: scale(1.1); opacity: 1; }
+  28% { transform: scale(1); opacity: 1; }
+  82% { transform: scale(1); opacity: 1; }
+  100% { transform: scale(1); opacity: 0; }
+}
+
+@keyframes goal-fade {
+  0%, 88% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+.animate-goal-pop {
+  animation: goal-pop 2.4s ease-out forwards;
+}
+
+.animate-goal-fade {
+  animation: goal-fade 2.4s ease-out forwards;
+}

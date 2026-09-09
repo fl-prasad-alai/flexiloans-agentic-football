@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { CommentaryFeed } from "@/components/CommentaryFeed";
+import { GoalFlash } from "@/components/GoalFlash";
 import { Pitch } from "@/components/Pitch";
 import { ScoreHUD } from "@/components/ScoreHUD";
 import { initMatch, tickMatch, type MatchRuntime } from "@/lib/engine/match";
@@ -33,16 +34,30 @@ export default function MatchPage() {
     runtimeRef.current ? { ...runtimeRef.current.state } : null,
   );
   const [speed, setSpeed] = useState(1);
+  const [goalFlash, setGoalFlash] = useState<{ key: number; side: "home" | "away"; text: string } | null>(null);
+  const goalTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const id = setInterval(() => {
       const rt = runtimeRef.current;
       if (!rt || rt.state.finished || rt.state.paused) return;
-      tickMatch(rt);
+      const events = tickMatch(rt);
       setMatchState({ ...rt.state });
+      const goal = events.find((e) => e.kind === "GOAL");
+      if (goal && goal.side) {
+        if (goalTimeoutRef.current) clearTimeout(goalTimeoutRef.current);
+        setGoalFlash({ key: goal.tick, side: goal.side, text: goal.text });
+        goalTimeoutRef.current = setTimeout(() => setGoalFlash(null), 2400);
+      }
     }, BASE_INTERVAL_MS / speed);
     return () => clearInterval(id);
   }, [speed]);
+
+  useEffect(() => {
+    return () => {
+      if (goalTimeoutRef.current) clearTimeout(goalTimeoutRef.current);
+    };
+  }, []);
 
   function togglePause() {
     const rt = runtimeRef.current;
@@ -95,10 +110,11 @@ export default function MatchPage() {
 
         <div className="flex-1 grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4 min-h-[520px]">
           <div
-            className="rounded-2xl border overflow-hidden"
+            className="relative rounded-2xl border overflow-hidden"
             style={{ borderColor: "var(--hud-border)", background: "var(--crowd)" }}
           >
             <Pitch players={matchState.players} ball={matchState.ball} home={home} away={away} />
+            {goalFlash && <GoalFlash key={goalFlash.key} team={goalFlash.side === "home" ? home : away} text={goalFlash.text} />}
           </div>
           <CommentaryFeed events={matchState.events} />
         </div>
