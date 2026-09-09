@@ -1,26 +1,105 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #05070d;
+  --foreground: #f4f6fb;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --font-sans: var(--font-body);
+  --font-display: var(--font-display);
+  --font-mono: var(--font-mono);
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-body), Arial, Helvetica, sans-serif;
+}
+
+.font-display {
+  font-family: var(--font-display), "Arial Narrow", sans-serif;
+  letter-spacing: 0.04em;
+}
+
+/* ---------------- Pitch themes ----------------
+   Each theme sets a shared set of CSS variables consumed by <Pitch/>, the HUD and
+   the surrounding stadium chrome. Swap the wrapping `data-theme` attribute to re-skin. */
+
+[data-theme="stadium-night"] {
+  --stadium-bg-a: #050912;
+  --stadium-bg-b: #0d1730;
+  --grass-a: #0e3d24;
+  --grass-b: #12492b;
+  --grass-line: rgba(255, 255, 255, 0.82);
+  --grass-logo: rgba(255, 255, 255, 0.16);
+  --grass-logo-stroke: rgba(255, 255, 255, 0.4);
+  --hud-bg: rgba(8, 14, 28, 0.86);
+  --hud-border: rgba(110, 168, 255, 0.35);
+  --accent: #5ee1ff;
+  --accent-2: #ffcf4d;
+  --crowd: #101a30;
+  --text-dim: #93a2c4;
+  --glow: 0 0 40px rgba(94, 225, 255, 0.25);
+}
+
+[data-theme="broadcast-day"] {
+  --stadium-bg-a: #bfe0ff;
+  --stadium-bg-b: #eaf6ff;
+  --grass-a: #3c9a4a;
+  --grass-b: #46a854;
+  --grass-line: rgba(255, 255, 255, 0.92);
+  --grass-logo: rgba(255, 255, 255, 0.55);
+  --grass-logo-stroke: rgba(255, 255, 255, 0.85);
+  --hud-bg: rgba(255, 255, 255, 0.92);
+  --hud-border: rgba(15, 23, 42, 0.12);
+  --accent: #0b6efd;
+  --accent-2: #ff7a1a;
+  --crowd: #d7ecff;
+  --text-dim: #47546b;
+  --glow: 0 10px 30px rgba(11, 110, 253, 0.18);
+}
+
+[data-theme="minimal-turf"] {
+  --stadium-bg-a: #f4f1ea;
+  --stadium-bg-b: #f4f1ea;
+  --grass-a: #1f6b3a;
+  --grass-b: #24793f;
+  --grass-line: rgba(255, 255, 255, 0.9);
+  --grass-logo: rgba(255, 255, 255, 0.65);
+  --grass-logo-stroke: rgba(255, 255, 255, 0.9);
+  --hud-bg: #12130f;
+  --hud-border: rgba(255, 255, 255, 0.08);
+  --accent: #ff6a2c;
+  --accent-2: #1f6b3a;
+  --crowd: #e7e2d4;
+  --text-dim: #8b8a80;
+  --glow: none;
+}
+
+@keyframes floodlight-flicker {
+  0%, 92%, 100% { opacity: 1; }
+  94% { opacity: 0.85; }
+  96% { opacity: 1; }
+}
+
+@keyframes ball-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+@keyframes feed-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-feed-in {
+  animation: feed-in 260ms ease-out;
 }

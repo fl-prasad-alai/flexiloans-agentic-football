@@ -1,0 +1,134 @@
+"use client";
+
+import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
+import { CommentaryFeed } from "@/components/CommentaryFeed";
+import { Pitch } from "@/components/Pitch";
+import { ScoreHUD } from "@/components/ScoreHUD";
+import { initMatch, tickMatch, type MatchRuntime } from "@/lib/engine/match";
+import type { MatchState, TeamConfig } from "@/lib/engine/types";
+import { useMatchSetupStore } from "@/lib/store/matchSetupStore";
+
+const BASE_INTERVAL_MS = 650;
+
+function freshRuntime(pending: { home: TeamConfig; away: TeamConfig; totalTicks: number }) {
+  return initMatch({
+    home: pending.home,
+    away: pending.away,
+    totalTicks: pending.totalTicks,
+    seed: Date.now() % 2147483647,
+  });
+}
+
+export default function MatchPage() {
+  const router = useRouter();
+  const pending = useMatchSetupStore((s) => s.pending);
+  // The simulation engine is a mutable, external-to-React object by design (see lib/engine/match.ts);
+  // it lives in a ref, and only the plain-object snapshot in `matchState` drives rendering.
+  const runtimeRef = useRef<MatchRuntime | null>(null);
+  if (runtimeRef.current === null && pending) {
+    runtimeRef.current = freshRuntime(pending);
+  }
+  const [matchState, setMatchState] = useState<MatchState | null>(() =>
+    runtimeRef.current ? { ...runtimeRef.current.state } : null,
+  );
+  const [speed, setSpeed] = useState(1);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      const rt = runtimeRef.current;
+      if (!rt || rt.state.finished || rt.state.paused) return;
+      tickMatch(rt);
+      setMatchState({ ...rt.state });
+    }, BASE_INTERVAL_MS / speed);
+    return () => clearInterval(id);
+  }, [speed]);
+
+  function togglePause() {
+    const rt = runtimeRef.current;
+    if (!rt) return;
+    rt.state.paused = !rt.state.paused;
+    setMatchState({ ...rt.state });
+  }
+
+  function rematch() {
+    if (!pending) return;
+    const fresh = freshRuntime(pending);
+    runtimeRef.current = fresh;
+    setMatchState({ ...fresh.state });
+  }
+
+  if (!pending) {
+    return (
+      <div className="flex-1 grid place-items-center px-6">
+        <div className="text-center">
+          <h1 className="font-display text-3xl mb-3">No match queued</h1>
+          <button onClick={() => router.push("/play")} className="rounded-xl bg-white text-black px-5 py-2.5 font-semibold">
+            Set up a match
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!matchState) return null;
+
+  const { home, away } = pending;
+
+  return (
+    <div data-theme={pending.theme} className="flex-1 flex flex-col" style={{ background: "var(--stadium-bg-a)" }}>
+      <div
+        className="flex-1 flex flex-col gap-4 max-w-7xl mx-auto w-full px-4 py-6"
+        style={{
+          background: `radial-gradient(circle at 50% -10%, var(--stadium-bg-b), var(--stadium-bg-a))`,
+        }}
+      >
+        <ScoreHUD
+          state={matchState}
+          home={home}
+          away={away}
+          speed={speed}
+          onSpeedChange={setSpeed}
+          onTogglePause={togglePause}
+          onExit={() => router.push("/play")}
+        />
+
+        <div className="flex-1 grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4 min-h-[520px]">
+          <div
+            className="rounded-2xl border overflow-hidden"
+            style={{ borderColor: "var(--hud-border)", background: "var(--crowd)" }}
+          >
+            <Pitch players={matchState.players} ball={matchState.ball} home={home} away={away} />
+          </div>
+          <CommentaryFeed events={matchState.events} />
+        </div>
+
+        {matchState.finished && (
+          <div
+            className="rounded-2xl border p-6 flex items-center justify-between"
+            style={{ background: "var(--hud-bg)", borderColor: "var(--hud-border)" }}
+          >
+            <div>
+              <div className="font-display text-2xl">Full Time</div>
+              <div className="text-sm" style={{ color: "var(--text-dim)" }}>
+                {home.name} {matchState.score.home} – {matchState.score.away} {away.name}
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={rematch} className="rounded-xl bg-white text-black px-4 py-2 font-semibold text-sm">
+                Rematch
+              </button>
+              <button
+                onClick={() => router.push("/play")}
+                className="rounded-xl border px-4 py-2 text-sm"
+                style={{ borderColor: "var(--hud-border)" }}
+              >
+                New Match
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
