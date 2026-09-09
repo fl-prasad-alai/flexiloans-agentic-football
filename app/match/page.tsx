@@ -46,6 +46,9 @@ export default function MatchPage() {
   const [speed, setSpeed] = useState(1);
   const [goalFlash, setGoalFlash] = useState<{ key: number; side: "home" | "away"; text: string } | null>(null);
   const goalTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // True while play is held for a goal celebration specifically (as opposed to the user's own
+  // pause button) — lets the auto-resume below back off if the user pauses during the flash.
+  const goalHoldRef = useRef(false);
   const [tickEvents, setTickEvents] = useState<MatchEvent[]>([]);
 
   useEffect(() => {
@@ -53,14 +56,23 @@ export default function MatchPage() {
       const rt = runtimeRef.current;
       if (!rt || rt.state.finished || rt.state.paused) return;
       const events = tickMatch(rt);
-      setMatchState({ ...rt.state });
-      setTickEvents(events);
       const goal = events.find((e) => e.kind === "GOAL");
       if (goal && goal.side) {
+        rt.state.paused = true;
+        goalHoldRef.current = true;
         if (goalTimeoutRef.current) clearTimeout(goalTimeoutRef.current);
         setGoalFlash({ key: goal.tick, side: goal.side, text: goal.text });
-        goalTimeoutRef.current = setTimeout(() => setGoalFlash(null), 2400);
+        goalTimeoutRef.current = setTimeout(() => {
+          setGoalFlash(null);
+          if (goalHoldRef.current && runtimeRef.current) {
+            goalHoldRef.current = false;
+            runtimeRef.current.state.paused = false;
+            setMatchState({ ...runtimeRef.current.state });
+          }
+        }, 2400);
       }
+      setMatchState({ ...rt.state });
+      setTickEvents(events);
     }, BASE_INTERVAL_MS / speed);
     return () => clearInterval(id);
   }, [speed]);
@@ -74,12 +86,16 @@ export default function MatchPage() {
   function togglePause() {
     const rt = runtimeRef.current;
     if (!rt) return;
+    goalHoldRef.current = false; // a manual toggle always takes priority over the goal auto-pause
     rt.state.paused = !rt.state.paused;
     setMatchState({ ...rt.state });
   }
 
   function rematch() {
     if (!pending) return;
+    if (goalTimeoutRef.current) clearTimeout(goalTimeoutRef.current);
+    goalHoldRef.current = false;
+    setGoalFlash(null);
     const fresh = freshRuntime(pending);
     runtimeRef.current = fresh;
     setMatchState({ ...fresh.state });

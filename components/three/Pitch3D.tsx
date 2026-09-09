@@ -6,7 +6,7 @@ import { PerspectiveCamera } from "@react-three/drei";
 import { PITCH } from "@/lib/engine/pitch";
 import type { MatchEvent, MatchState, PitchTheme, TeamConfig } from "@/lib/engine/types";
 import { useThemeColors } from "@/lib/three/theme";
-import type { RenderRefs } from "@/lib/three/interpolate";
+import { toSnapshot, type RenderRefs } from "@/lib/three/interpolate";
 import { Field } from "./Field";
 import { Goal } from "./Goal";
 import { Stadium } from "./Stadium";
@@ -38,19 +38,20 @@ export default function Pitch3D({
   const savedViewRef = useRef<CameraView>("broadcast");
   const goalCamTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const prevStateRef = useRef(matchState);
-  const latestStateRef = useRef(matchState);
+  const latestSnapRef = useRef(toSnapshot(matchState));
+  const prevSnapRef = useRef(latestSnapRef.current);
   const changedAtRef = useRef(performance.now());
 
   useEffect(() => {
-    prevStateRef.current = latestStateRef.current;
-    latestStateRef.current = matchState;
+    const snap = toSnapshot(matchState);
+    prevSnapRef.current = latestSnapRef.current;
+    latestSnapRef.current = snap;
     changedAtRef.current = performance.now();
     // Runs once per engine tick to roll the interpolation window forward; matchState.tick is the right dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matchState.tick]);
 
-  const refs: RenderRefs = { prevRef: prevStateRef, latestRef: latestStateRef, changedAtRef, tickIntervalMs };
+  const refs: RenderRefs = { prevRef: prevSnapRef, latestRef: latestSnapRef, changedAtRef, tickIntervalMs };
 
   const [bursts, setBursts] = useState<BurstSpec[]>([]);
   const removeBurst = useCallback((id: number) => {
