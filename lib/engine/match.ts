@@ -226,8 +226,7 @@ export function tickMatch(runtime: MatchRuntime): MatchEvent[] {
       const aimPoint = cornerTarget(cmd.aim, ballOwner.side);
       ballOwner.hasBall = false;
       state.ball.ownerId = null;
-      state.ball.flight = { from: ballOwner.pos, to: aimPoint, progress: 0, kind: "SHOT", aim: cmd.aim };
-      (state.ball.flight as BallInFlight & { power?: number }).power = cmd.power;
+      state.ball.flight = { from: ballOwner.pos, to: aimPoint, progress: 0, kind: "SHOT", aim: cmd.aim, power: cmd.power };
     } else if (cmd.type === "PASS" || cmd.type === "GK_DISTRIBUTE") {
       const targetId = cmd.type === "PASS" ? cmd.targetPlayerId : cmd.targetPlayerId;
       const targetPlayer = state.players.find((p) => p.id === targetId);
@@ -241,6 +240,8 @@ export function tickMatch(runtime: MatchRuntime): MatchEvent[] {
           progress: 0,
           kind,
           ownerOnArrival: targetPlayer.id,
+          passType: cmd.type === "PASS" ? cmd.passType : undefined,
+          distributeMethod: cmd.type === "GK_DISTRIBUTE" ? cmd.method : undefined,
         };
       }
     }

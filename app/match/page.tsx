@@ -1,14 +1,24 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { CommentaryFeed } from "@/components/CommentaryFeed";
 import { GoalFlash } from "@/components/GoalFlash";
-import { Pitch } from "@/components/Pitch";
 import { ScoreHUD } from "@/components/ScoreHUD";
 import { initMatch, tickMatch, type MatchRuntime } from "@/lib/engine/match";
-import type { MatchState, TeamConfig } from "@/lib/engine/types";
+import type { MatchEvent, MatchState, TeamConfig } from "@/lib/engine/types";
 import { useMatchSetupStore } from "@/lib/store/matchSetupStore";
+
+// Three.js needs a real DOM/WebGL context, so the 3D pitch is loaded client-only.
+const Pitch3D = dynamic(() => import("@/components/three/Pitch3D"), {
+  ssr: false,
+  loading: () => (
+    <div className="w-full h-full grid place-items-center text-sm" style={{ color: "var(--text-dim)" }}>
+      Loading pitch…
+    </div>
+  ),
+});
 
 const BASE_INTERVAL_MS = 650;
 
@@ -36,6 +46,7 @@ export default function MatchPage() {
   const [speed, setSpeed] = useState(1);
   const [goalFlash, setGoalFlash] = useState<{ key: number; side: "home" | "away"; text: string } | null>(null);
   const goalTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [tickEvents, setTickEvents] = useState<MatchEvent[]>([]);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -43,6 +54,7 @@ export default function MatchPage() {
       if (!rt || rt.state.finished || rt.state.paused) return;
       const events = tickMatch(rt);
       setMatchState({ ...rt.state });
+      setTickEvents(events);
       const goal = events.find((e) => e.kind === "GOAL");
       if (goal && goal.side) {
         if (goalTimeoutRef.current) clearTimeout(goalTimeoutRef.current);
@@ -113,7 +125,14 @@ export default function MatchPage() {
             className="relative rounded-2xl border overflow-hidden"
             style={{ borderColor: "var(--hud-border)", background: "var(--crowd)" }}
           >
-            <Pitch players={matchState.players} ball={matchState.ball} home={home} away={away} />
+            <Pitch3D
+              matchState={matchState}
+              newEvents={tickEvents}
+              home={home}
+              away={away}
+              theme={pending.theme}
+              tickIntervalMs={BASE_INTERVAL_MS / speed}
+            />
             {goalFlash && <GoalFlash key={goalFlash.key} team={goalFlash.side === "home" ? home : away} text={goalFlash.text} />}
           </div>
           <CommentaryFeed events={matchState.events} />

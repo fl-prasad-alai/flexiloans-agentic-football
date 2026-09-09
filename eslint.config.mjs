@@ -17,6 +17,20 @@ const eslintConfig = defineConfig([
       "react-hooks/immutability": "off",
     },
   },
+  {
+    // The 3D pitch (components/three/**) is a react-three-fiber scene: an imperative WebGL
+    // render loop driven by useFrame, wall-clock interpolation between engine tick snapshots
+    // (performance.now()), and cosmetic particle effects (Math.random()). None of that is
+    // React-owned render state, so the same exception as app/match/page.tsx applies here —
+    // plus "purity" for the impure timing/randomness calls the rig legitimately needs.
+    files: ["components/three/**", "lib/three/**"],
+    rules: {
+      "react-hooks/refs": "off",
+      "react-hooks/set-state-in-effect": "off",
+      "react-hooks/immutability": "off",
+      "react-hooks/purity": "off",
+    },
+  },
   // Override default ignores of eslint-config-next.
   globalIgnores([
     // Default ignores of eslint-config-next:

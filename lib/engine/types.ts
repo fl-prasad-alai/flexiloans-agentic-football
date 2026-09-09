@@ -100,6 +100,10 @@ export type BallInFlight = {
   kind: "PASS" | "SHOT" | "CLEARANCE" | "THROW";
   ownerOnArrival?: string; // playerId who should receive it, if any
   aim?: Corner;
+  /** Renderer-only metadata (doesn't affect resolution): shot power and the original pass/distribute flavor, used to shape the 3D arc. */
+  power?: number;
+  passType?: PassType;
+  distributeMethod?: DistributeMethod;
 };
 
 export interface BallState {

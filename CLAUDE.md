@@ -55,6 +55,14 @@ These were explicit choices, confirmed with the user via AskUserQuestion before 
   the visual polish easier. Zustand for state: `lib/store/teamStore.ts` is `persist`-backed
   (localStorage) for saved squads; `lib/store/matchSetupStore.ts` is in-memory only, just a
   hand-off of the two chosen `TeamConfig`s from `/play` to `/match`.
+- **Live match rendering is a react-three-fiber 3D scene, not the SVG pitch.** `components/Pitch.tsx`
+  (2D SVG) is now only used for the static, non-ticking preview on the landing page (`app/page.tsx`);
+  the actual `/match` view renders `components/three/Pitch3D.tsx` instead — see the `lib/three/` and
+  `components/three/` rows in the architecture map below. This was purely a rendering-layer swap:
+  `lib/engine/*` (the sim itself) is untouched except for three small additive metadata fields on
+  `BallInFlight` (`power`, `passType`, `distributeMethod`) that the old renderer never needed but the
+  3D arc/height calc does — none of it feeds back into gameplay resolution. If asked to touch the
+  match engine, you generally don't need to touch the 3D layer, and vice versa.
 
 ## Architecture map
 
@@ -93,18 +101,62 @@ lib/store/
   teamStore.ts        Persisted (localStorage) CRUD store for saved squads.
   matchSetupStore.ts  In-memory hand-off: { home, away, totalTicks, theme } from /play to /match.
 
+lib/three/
+  theme.ts        useThemeColors(theme) — resolves the CSS-custom-property palette (globals.css)
+                 into real color strings via a throwaway probe DOM node, since three.js materials
+                 can't read CSS vars directly. Keeps the 3D scene's colors driven by the same
+                 [data-theme] source of truth instead of a hand-duplicated palette.
+  interpolate.ts  RenderRefs + interpolatedPlayerPos/interpolatedBall — the engine ticks in
+                 discrete ~650ms/speed steps but the render loop runs at 60fps, so every visual
+                 component lerps between the previous and latest MatchState snapshot by elapsed
+                 wall-clock time instead of teleporting. This is purely cosmetic; it never writes
+                 back into MatchState.
+  arc.ts          flightHeight(flight, progress) — cosmetic parabolic height for the ball during
+                 a BallInFlight, shaped by kind/power/passType/distributeMethod. Also render-only.
+  textures.ts     CanvasTexture builders: the grass+markings+FL crest (baked once per theme, sized
+                 exactly to PITCH extents so it lines up with player world coordinates), goal net,
+                 ball pentagon pattern, crowd noise, role-tag sprites, a soft glow/particle dot.
+
+components/three/
+  Pitch3D.tsx     Top-level scene, dynamically imported with `ssr: false` from app/match/page.tsx
+                 (three.js needs a real DOM/WebGL context). Owns camera-view state, the
+                 prev/latest MatchState refs interpolation feeds off, and detects SHOT/GOAL/TACKLE
+                 transitions to spawn Burst particle effects and the goal-cam auto-cut.
+  Field.tsx, Goal.tsx, Stadium.tsx   Ground + markings, goal frame/net (with a brief net-ripple on
+                 a conceded goal), and the environment shell (lights, fog, floodlights, crowd
+                 stands) respectively.
+  Player.tsx      One humanoid per PlayerState: procedural capsule/sphere rig with a running/idle
+                 leg-swing animation driven by interpolated velocity, plus the stamina ring and
+                 possession glow carried over from the old SVG version.
+  Ball.tsx        Textured sphere following the interpolated position + arc height, with rolling
+                 spin, a drei `<Trail>` motion streak, and an additive speed-glow sprite.
+  CameraRig.tsx / CameraSwitcher.tsx   Five views — Broadcast/Sideline/Behind Goal/Tactical/Free
+                 (OrbitControls) — damped-follow on the ball, with a brief camera-shake on
+                 shots/goals and an automatic cut to Behind Goal for ~2.6s when a goal fires.
+  effects/Burst.tsx   Short-lived particle puff (kicks/tackles/goals), spawned and unmounted by
+                 Pitch3D via a timer; no gameplay coupling.
+
+  IMPORTANT — every meshStandardMaterial needs an explicit `metalness`. Its three.js default is
+  0.5, and without an environment map a mid-metalness surface reads as near-black under simple
+  lights; this bit us once already (the whole pitch rendered solid black until every material got
+  `metalness={0}`). Also: the `stadium-night` theme's grass/crowd hex values are deliberately very
+  dark for the flat 2D SVG version, so the 3D lighting rig compensates with much higher
+  directional/point-light intensities than you'd expect from "night" — don't dim those back down
+  to match the CSS values literally, or the pitch goes dark again.
+
 components/
-  Pitch.tsx          The SVG field renderer — mowed-stripe grass, pitch markings, goals with net
-                     pattern, players (role-labeled circles with a stamina ring + possession
-                     glow), the ball, AND the FL crest mowed into the center circle with
-                     "FLEXILOANS" lettered below it. All theme-aware via CSS custom properties
-                     (--grass-a/-b, --grass-line, --grass-logo, etc.) read with inline style={{}}
-                     since SVG presentation attributes can't reference CSS vars directly.
+  Pitch.tsx          The SVG field renderer (mowed-stripe grass, markings, goals, players, ball,
+                     FL crest) — now only used for the landing page's static preview, NOT the live
+                     match view (see the 3D rendering decision above). Still fully theme-aware via
+                     the same CSS custom properties.
   ScoreHUD.tsx        Team badges, score, clock/half, speed (1x/2x/4x) + pause + exit controls.
   CommentaryFeed.tsx  Auto-scrolling event log with an icon per event kind.
   ThemePicker.tsx     3-card picker for the stadium designs (see below).
   AgentEditor.tsx     One role's config card: name, preset buttons, the 5 personality sliders.
                      Picking a slider manually flips the agent's preset to "custom".
+  GoalFlash.tsx       DOM overlay banner ("GOAL!" + commentary line, team-colored) that flashes
+                     over the pitch container on a GOAL event; independent of the 2D/3D renderer
+                     underneath since it's just an absolutely-positioned sibling div.
 
 app/
   page.tsx    Landing page — hero copy + a live (non-ticking) Pitch preview using two House XI
@@ -114,8 +166,9 @@ app/
   play/page.tsx   Choose your squad + opponent (saved squads ∪ House XI) + ThemePicker + match
                  length, then stash a MatchSetup in matchSetupStore and router.push("/match").
   match/page.tsx  Reads the pending MatchSetup, runs initMatch() once, then ticks on a
-                 setInterval (650ms / speed). See the React-integration note just below — this
-                 file has scoped ESLint rule overrides that are intentional.
+                 setInterval (650ms / speed), dynamically loading Pitch3D (ssr:false). See the
+                 React-integration note just below — this file has scoped ESLint rule overrides
+                 that are intentional.
 ```
 
 ### The `app/match/page.tsx` ESLint overrides — do not "fix" these away
@@ -131,6 +184,11 @@ every tick," which is a legitimate, common pattern here. If you refactor this fi
 separation (ref = engine, state = render snapshot) rather than trying to make `tickMatch` pure —
 making the whole engine immutable/pure would mean deep-cloning 10 players + events every ~150ms
 at 4x speed for no real benefit.
+
+The same override (plus `react-hooks/purity`) is extended to `components/three/**` and
+`lib/three/**` for the same underlying reason: the 3D scene is a react-three-fiber render loop
+(`useFrame`) doing wall-clock interpolation (`performance.now()`) and cosmetic particle randomness
+(`Math.random()`), none of which is React-owned render state either.
 
 ## Simplifications vs. the real protocol (deliberate, not bugs)
 
@@ -151,12 +209,21 @@ at 4x speed for no real benefit.
   5-a-side-plausible ~13-9-ish range. Still fairly high-scoring; further tuning is a matter of
   taste, not correctness — see `onTargetChance`/`saveChance` in `resolveShot`.
 
-## Testing approach (no browser tool was available when this was built)
+## Testing approach
 
-There is currently no browser-automation tool in this environment, so the UI has only been
-verified structurally, not visually. If you have real browser/screenshot tooling available in
-your session, use it — actually look at `/`, `/build`, `/play`, `/match` before claiming a UI
-change works. Otherwise, the verification pattern used so far:
+No `chromium-cli` / bundled browser tool is available in this environment, and `npx playwright
+install` fails here (`UNABLE_TO_GET_ISSUER_CERT_LOCALLY` fetching from cdn.playwright.dev — a
+sandbox TLS/network restriction, not a real absence of Chromium). The workaround that *does* work,
+used to actually visually verify the 3D match view: `npm install playwright-core` in a scratch
+directory (npm registry access is fine; only that one CDN download fails), then drive it with
+`chromium.launch({ channel: "chrome", args: ["--no-sandbox", "--use-gl=swiftshader",
+"--enable-webgl", "--ignore-gpu-blocklist"] })` pointed at the system's already-installed
+`/Applications/Google Chrome.app` instead of downloading a fresh Chromium. That gets you real
+screenshots (`page.screenshot()`) and `page.on("console"/"pageerror")` — actually look at them
+before claiming a visual change works; this is exactly how the black-pitch/metalness bug and the
+ball-trail-vs-halfway-line false alarm below were caught and fixed. If that route ever stops
+working, fall back to structural-only verification and say so explicitly rather than claiming a
+visual result you didn't see. Otherwise, the fuller verification pattern:
 
 1. `npx tsc --noEmit -p tsconfig.json` — must be clean.
 2. `npx eslint .` — must be clean (respecting the scoped override above).
@@ -173,6 +240,13 @@ change works. Otherwise, the verification pattern used so far:
    Run it with `npx tsx lib/engine/__smoketest.ts`. **Delete the file when done** — it's scratch,
    not part of the repo.
 
+One visual false-alarm worth knowing about: a straight line on the flat ground plane (the
+halfway line baked into the grass texture, or the ball's drei `<Trail>` streak) reads as
+strongly *diagonal* in any angled perspective camera view (Sideline/Broadcast/Behind
+Goal/Free) — that's correct 3D foreshortening, not a bug. Only trust "is this a stray
+artifact" calls made from the Tactical (near-top-down) view, where a genuinely broken line
+would still look wrong.
+
 ## Conventions
 
 - No comments unless they explain a non-obvious *why* (a workaround, a quirk inherited from the
@@ -188,7 +262,8 @@ change works. Otherwise, the verification pattern used so far:
 
 ## Backlog / ideas not yet built
 
-- Push this repo to GitHub (explicitly deferred — ask before doing it).
+- ~~Push this repo to GitHub~~ — done, pushed to `github.com/fl-prasad-alai/flexiloans-agentic-football`
+  (public) at the user's explicit request.
 - A real-LLM "authentic mode" toggle per the original ask: call Claude per tick for one or both
   teams instead of (or blended with) the deterministic engine, closer to the actual AgentCore
   system. Needs a backend/API route since browser-side API keys aren't safe.
@@ -199,3 +274,7 @@ change works. Otherwise, the verification pattern used so far:
 - Persisting match history / a post-match stats breakdown (shots, passes completed, possession %).
 - Sound effects, a proper crowd-noise/ambience layer per theme.
 - Automated tests (there is currently no test suite — only the ad-hoc smoke-test pattern above).
+- 3D polish ideas not yet done: jersey numbers/names as decals, a real environment map so
+  goal-post/ball metalness could go above 0 without looking black, distinct SAVE/MISS/BLOCK
+  camera beats (only GOAL currently triggers the behind-goal auto-cut), crowd LOD/instancing if
+  perf ever becomes a concern with more decoration.
