@@ -19,6 +19,10 @@ export interface PlayerSnapshot {
   y: number;
   hasBall: boolean;
   stamina: number;
+  /** True only on the tick(s) a SLIDE_TACKLE command is issued — drives the lunge pose. */
+  sliding: boolean;
+  /** True when sprinting for any reason (running, pressing hard, a keeper closing down a shot). */
+  sprinting: boolean;
 }
 
 export interface BallFlightSnapshot extends FlightLike {
@@ -42,7 +46,16 @@ export interface FrameSnapshot {
 
 export function toSnapshot(state: MatchState): FrameSnapshot {
   return {
-    players: state.players.map((p) => ({ id: p.id, x: p.pos.x, y: p.pos.y, hasBall: p.hasBall, stamina: p.stamina })),
+    players: state.players.map((p) => {
+      const cmd = p.lastCommand;
+      const sliding = cmd?.type === "SLIDE_TACKLE";
+      const sprinting =
+        sliding ||
+        (cmd?.type === "MOVE_TO" && cmd.sprint) ||
+        (cmd?.type === "PRESS_BALL" && cmd.intensity > 0.6) ||
+        (cmd?.type === "INTERCEPT" && cmd.aggressive);
+      return { id: p.id, x: p.pos.x, y: p.pos.y, hasBall: p.hasBall, stamina: p.stamina, sliding, sprinting };
+    }),
     ball: {
       x: state.ball.pos.x,
       y: state.ball.pos.y,
@@ -91,6 +104,8 @@ export interface InterpolatedPlayer {
   vy: number;
   hasBall: boolean;
   stamina: number;
+  sliding: boolean;
+  sprinting: boolean;
 }
 
 export function interpolatedPlayerPos(id: string, refs: RenderRefs): InterpolatedPlayer | null {
@@ -105,6 +120,8 @@ export function interpolatedPlayerPos(id: string, refs: RenderRefs): Interpolate
     vy: latest.y - prev.y,
     hasBall: latest.hasBall,
     stamina: latest.stamina,
+    sliding: latest.sliding,
+    sprinting: latest.sprinting,
   };
 }
 

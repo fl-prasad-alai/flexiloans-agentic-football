@@ -29,6 +29,7 @@ export function Player({
   refs: RenderRefs;
 }) {
   const group = useRef<THREE.Group>(null);
+  const bodyGroup = useRef<THREE.Group>(null);
   const leftLeg = useRef<THREE.Group>(null);
   const rightLeg = useRef<THREE.Group>(null);
   const leftArm = useRef<THREE.Group>(null);
@@ -37,6 +38,7 @@ export function Player({
   const possessionGlow = useRef<THREE.Mesh>(null);
   const facingRef = useRef(0);
   const phaseRef = useRef(0);
+  const lungeRef = useRef(0);
 
   const roleTag = useMemo(() => getRoleTagTexture(role), [role]);
 
@@ -57,13 +59,22 @@ export function Player({
     const speedNorm = Math.min(1, speed / 3.2);
     phaseRef.current += delta * (3.4 + speedNorm * 11);
     const swing = Math.sin(phaseRef.current) * (0.12 + speedNorm * 0.6);
-    if (leftLeg.current) leftLeg.current.rotation.x = swing;
-    if (rightLeg.current) rightLeg.current.rotation.x = -swing;
-    if (leftArm.current) leftArm.current.rotation.x = -swing * 0.75;
-    if (rightArm.current) rightArm.current.rotation.x = swing * 0.75;
+
+    // A slide tackle or a keeper diving to close down a shot gets a lunging, ground-hugging pose
+    // instead of the normal running cycle — smoothed so it eases in/out rather than snapping.
+    const wantLunge = data.sliding || (role === "GK" && data.sprinting);
+    lungeRef.current += ((wantLunge ? 1 : 0) - lungeRef.current) * Math.min(1, delta * 9);
+    const lunge = lungeRef.current;
+    const runAmount = 1 - lunge;
+
+    if (leftLeg.current) leftLeg.current.rotation.x = swing * runAmount + lunge * 1.0;
+    if (rightLeg.current) rightLeg.current.rotation.x = -swing * runAmount - lunge * 0.55;
+    if (leftArm.current) leftArm.current.rotation.x = -swing * 0.75 * runAmount - lunge * 0.6;
+    if (rightArm.current) rightArm.current.rotation.x = swing * 0.75 * runAmount + lunge * 0.9;
+    if (bodyGroup.current) bodyGroup.current.rotation.x = lunge * (Math.PI * 0.4);
 
     const bob = Math.abs(Math.sin(phaseRef.current * 2)) * (0.02 + speedNorm * 0.06);
-    group.current.position.y = bob;
+    group.current.position.y = bob - lunge * 0.4;
 
     if (staminaRing.current) {
       const mat = staminaRing.current.material as THREE.MeshBasicMaterial;
@@ -100,7 +111,7 @@ export function Player({
         </mesh>
       </group>
 
-      <group position-y={1.0}>
+      <group ref={bodyGroup} position-y={1.0}>
         <mesh castShadow>
           <capsuleGeometry args={[0.25, 0.44, 4, 8]} />
           <meshStandardMaterial color={team.primaryColor} roughness={0.65} metalness={0} />

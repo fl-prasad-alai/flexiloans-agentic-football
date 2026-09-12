@@ -29,6 +29,8 @@ export function ScoreHUD({
   onSpeedChange,
   onTogglePause,
   onExit,
+  isFullscreen,
+  onToggleFullscreen,
 }: {
   state: MatchState;
   home: TeamConfig;
@@ -37,6 +39,8 @@ export function ScoreHUD({
   onSpeedChange: (s: number) => void;
   onTogglePause: () => void;
   onExit: () => void;
+  isFullscreen?: boolean;
+  onToggleFullscreen?: () => void;
 }) {
   return (
     <div
@@ -74,6 +78,16 @@ export function ScoreHUD({
           >
             {state.paused ? "▶" : "❚❚"}
           </button>
+          {onToggleFullscreen && (
+            <button
+              onClick={onToggleFullscreen}
+              title={isFullscreen ? "Exit full screen" : "Full screen"}
+              className="px-2 py-0.5 rounded-md text-xs font-mono border ml-1"
+              style={{ borderColor: "var(--hud-border)" }}
+            >
+              {isFullscreen ? "⤡" : "⤢"}
+            </button>
+          )}
           <button
             onClick={onExit}
             className="px-2 py-0.5 rounded-md text-xs font-mono border ml-1"

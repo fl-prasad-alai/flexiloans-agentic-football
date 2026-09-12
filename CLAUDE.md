@@ -77,19 +77,46 @@ lib/engine/
   presets.ts      Tactical presets (Balanced/Aggressive/Defensive/Possession/Counter) → default
                  AgentPersonality values, with small per-role nudges (GK never shoots, forwards
                  lean slightly bolder).
-  decide.ts       THE AGENT BRAIN. decide(player, config, matchState) -> Command. Priority ladder:
-                 has ball → (GK distributes / shoot-if-in-range / pass-if-pressured-or-cautious /
-                 dribble) ; else own team has ball → make a run/hold shape by role ; else opponent
-                 has ball → press/intercept/slide-tackle if close, else mark the most dangerous
-                 opponent, else hold default slot ; else ball is loose → nearest own player chases
-                 it. This is called for ALL 10 players every tick, same as the real protocol.
-  match.ts        initMatch()/tickMatch() — the tick loop. Order per tick: advance any ball
-                 already in flight (resolve on arrival) → decide() for all 10 players → move
-                 everyone per their command → resolve the ball owner's PASS/SHOOT/GK_DISTRIBUTE
-                 into a new ball-flight → loose-ball pickup check → tackle-attempt resolution →
-                 half-time/full-time checks. `tickMatch` MUTATES the MatchState object in place
-                 and returns just the new MatchEvents — see the React integration note below,
-                 this is deliberate, not an oversight.
+  decide.ts       THE AGENT BRAIN. decide(player, config, matchState) -> Command. GKs get their
+                 own dedicated `decideGoalkeeper()`, called first and short-circuiting everything
+                 below for role==="GK" — they used to fall through the generic outfield ladder,
+                 which let them "MARK" an opponent or chase a loose ball anywhere on the pitch
+                 (dragging them out of goal) and left them standing still until a shot had nearly
+                 arrived. The dedicated version holds the angle between the ball and goal
+                 ("narrowing the angle" — off the line when the danger is distant, tucked in as it
+                 nears), actively tracks an in-flight SHOT aimed at its own goal instead of waiting
+                 for it to land, and only rushes a loose ball inside its own box. Don't route GK
+                 back through the outfield priority ladder below without preserving this.
+                 Outfield priority ladder: has ball → (shoot-if-in-range-and-unpressured / pass-if-
+                 pressured-or-cautious / dribble) ; else own team has ball → make a run/hold shape
+                 by role ; else opponent has ball → press/intercept/slide-tackle if close, else
+                 mark the most dangerous opponent, else hold default slot ; else ball is loose →
+                 nearest own player chases it. This is called for ALL 10 players every tick, same
+                 as the real protocol. The shoot branch requires `!underPressure` (a marked player
+                 looks for a pass instead of forcing a contested shot) — don't drop that condition
+                 or matches
+                 revert to the old shoot-on-sight, high-scoring behavior. Also: `bestPassTarget`
+                 is almost never null (any outfield teammate counts), so don't gate it ahead of the
+                 dribble-forward fallback the way an earlier revision of this file briefly did —
+                 that silently made dribbling unreachable and shooting nearly impossible.
+  match.ts        initMatch()/tickMatch() — the tick loop. Order per tick: consume a deferred
+                 kickoff if one is pending → advance any ball already in flight (resolve on
+                 arrival) → decide() for all 10 players → move everyone per their command →
+                 resolve the ball owner's PASS/SHOOT/GK_DISTRIBUTE into a new ball-flight →
+                 loose-ball pickup check → tackle-attempt resolution → half-time/full-time checks.
+                 `tickMatch` MUTATES the MatchState object in place (including `state.players` and
+                 an in-flight `state.ball.flight`, which are the SAME objects tick over tick, never
+                 replaced) and returns just the new MatchEvents — see the React integration note
+                 below, this is deliberate, not an oversight. **This in-place mutation is exactly
+                 why `lib/three/interpolate.ts` snapshots plain numbers instead of holding onto a
+                 raw MatchState reference** — an earlier revision aliased "previous tick" state to
+                 the live mutating objects, which made 3D players render as static/stepped instead
+                 of smoothly moving. `pendingKickoff` on MatchState defers the post-goal reset by
+                 one tick (set in `resolveShot`'s GOAL branch instead of calling `kickoff()`
+                 immediately) so the ball is seen resting in the net during the goal celebration
+                 rather than teleporting to the center circle in the same frame the GOAL event
+                 fires — the loose-ball pickup check is also guarded against `pendingKickoff` so
+                 nobody scoops up the "dead" ball in the net before kickoff actually happens.
   commentary.ts   Event-kind → templated commentary line, picked with the seeded RNG.
   rng.ts          mulberry32 seeded PRNG — same seed always plays out identically. Every
                  `Math.random()` call in the engine should go through this instead, for replay
@@ -168,7 +195,10 @@ app/
   match/page.tsx  Reads the pending MatchSetup, runs initMatch() once, then ticks on a
                  setInterval (650ms / speed), dynamically loading Pitch3D (ssr:false). See the
                  React-integration note just below — this file has scoped ESLint rule overrides
-                 that are intentional.
+                 that are intentional. Also owns the fullscreen toggle (Fullscreen API on the
+                 whole content div — ScoreHUD + Pitch3D + CommentaryFeed together, "cinema mode",
+                 not just the canvas) via a `contentRef` + `fullscreenchange` listener; the button
+                 itself lives in ScoreHUD (`isFullscreen`/`onToggleFullscreen` props).
 ```
 
 ### The `app/match/page.tsx` ESLint overrides — do not "fix" these away
@@ -204,10 +234,33 @@ The same override (plus `react-hooks/purity`) is extended to `components/three/*
   is picked up by whichever player (either team) is nearest when it settles. A shot that goes
   off target or is saved is just handed to the defending keeper, not played out as a real goal
   kick. This is a real gap if someone wants proper restart sequences.
-- Shot/save probabilities in `resolveShot()` (`lib/engine/match.ts`) were tuned once already —
-  an initial version produced ~25-goal matches (see Testing below), tuned down to a more
-  5-a-side-plausible ~13-9-ish range. Still fairly high-scoring; further tuning is a matter of
-  taste, not correctness — see `onTargetChance`/`saveChance` in `resolveShot`.
+- Shot/save probabilities in `resolveShot()` (`lib/engine/match.ts`) have been tuned FOUR times now
+  — each time, re-run a multi-match sampled smoketest (see below) rather than eyeballing 1-2
+  matches, since per-match variance is high. History, in order: ~25-goal matches → ~13-9-ish →
+  `onTargetChance=0.2+power*0.08`/`saveChance=0.93-keeperDist*0.02-power*0.06` landed ~3.4 combined
+  goals/match at ~17% conversion — **but that tuning assumed a passively-positioned keeper**. Once
+  `decideGoalkeeper()` (see decide.ts row above) made the keeper actively track shots, the same
+  constants collapsed scoring to ~1.4 goals/match (half the sampled matches finished 0-0) because
+  `keeperDist` is now almost always small. Current values —
+  `onTargetChance=0.28+power*0.1` / `saveChance=0.72-keeperDist*0.02-power*0.2` — land back around
+  ~3.2 combined goals/match at ~12% conversion with a competent keeper. **If you touch keeper
+  positioning again, re-tune these together** — they're coupled, not independent knobs. Also:
+  `decide()`'s shoot branch requires `!underPressure` now (see the decide.ts row above) — that's
+  load-bearing for the "more passing before a shot" feel, not just the raw probabilities.
+- A shot's flight now takes ~3-4 ticks to resolve (`flightProgressStep` returns 0.32 for `"SHOT"`,
+  not an instant 1) specifically so the 3D renderer has time to show the ball actually traveling
+  toward the goal before a GOAL/SAVE/MISS event fires — previously the entire kick-to-outcome
+  sequence collapsed into a single tick transition, so the ball visually never appeared to reach
+  the goalpost even when the shot was genuinely on target.
+- A won tackle (`SLIDE_TACKLE`/`INTERCEPT`/`PRESS_BALL` succeeding against a carrier, in the
+  "Tackle attempts" section of `tickMatch`) spills the ball loose between the two players instead
+  of snapping possession straight to the tackler — a real 50-50 duel ends in a scramble that
+  either side (or a third player) can win on a following tick via the ordinary loose-ball pickup
+  check, not an instant swap. `components/three/Player.tsx` reads a `sliding` flag (derived from
+  `lastCommand.type === "SLIDE_TACKLE"`, threaded through `lib/three/interpolate.ts`'s snapshot)
+  to show a forward-lunging, ground-hugging pose instead of the normal run cycle; a goalkeeper
+  sprinting to close down a shot gets the same pose treatment (`role==="GK" && sprinting`) as a
+  stand-in dive animation.
 
 ## Testing approach
 
@@ -223,7 +276,21 @@ screenshots (`page.screenshot()`) and `page.on("console"/"pageerror")` — actua
 before claiming a visual change works; this is exactly how the black-pitch/metalness bug and the
 ball-trail-vs-halfway-line false alarm below were caught and fixed. If that route ever stops
 working, fall back to structural-only verification and say so explicitly rather than claiming a
-visual result you didn't see. Otherwise, the fuller verification pattern:
+visual result you didn't see.
+
+`next.config.ts` sets `allowedDevOrigins: ["[::1]"]` — this machine also runs a separate NestJS
+project's server on port 3000 bound to IPv4, so `http://localhost:3000` is ambiguous (resolves to
+whichever process wins the IPv4/IPv6 race) while `http://[::1]:3000` reliably reaches THIS
+project's dev server. Without `allowedDevOrigins`, Next blocks that origin's HMR/dev-resource
+requests by default, which is worth knowing about if interactions (button clicks, etc.) mysteriously
+stop registering when testing via `[::1]`. Separately: Next 16 only allows one `next dev` per
+project directory regardless of port — if you try to start a second instance, it detects the
+existing one and exits immediately (test against the existing instance instead, or stop it first
+if nothing else needs it). Something on this machine also appears to auto-respawn a dev server for
+this project moments after one is killed (observed repeatedly this session, cause unconfirmed —
+possibly an IDE-integrated task) — don't be surprised if a "stopped" server is back within seconds.
+
+Otherwise, the fuller verification pattern:
 
 1. `npx tsc --noEmit -p tsconfig.json` — must be clean.
 2. `npx eslint .` — must be clean (respecting the scoped override above).

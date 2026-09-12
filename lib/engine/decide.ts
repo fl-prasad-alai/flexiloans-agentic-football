@@ -1,5 +1,5 @@
 import type { AgentConfig, Command, Corner, MatchState, PlayerState, Side } from "./types";
-import { attackDir, clampToPitch, defaultSlot, dist, oppGoalXFor } from "./pitch";
+import { attackDir, clamp, clampToPitch, defaultSlot, dist, goalXFor, oppGoalXFor, PITCH } from "./pitch";
 
 function teammatesOf(state: MatchState, side: Side, excludeId?: string): PlayerState[] {
   return state.players.filter((p) => p.side === side && p.id !== excludeId);
@@ -88,7 +88,71 @@ function distToSegment(p: { x: number; y: number }, a: { x: number; y: number },
   return Math.hypot(p.x - projx, p.y - projy);
 }
 
+const GK_MAX_OFF_LINE = 5; // how far off the goal line a keeper will come in open play
+const GK_CLAIM_RADIUS = 10; // will rush a loose ball only within this radius, and only in the box
+
+/**
+ * Goalkeepers get a dedicated brain instead of falling through the outfield priority ladder —
+ * that used to let them "MARK" an opponent or chase a loose ball anywhere on the pitch, dragging
+ * them out of goal, and left them standing still until a shot had nearly arrived. Real keepers
+ * continuously hold the angle between the ball and the goal ("narrowing the angle"), coming
+ * further off the line the more distant the danger and tucking back in as it closes, and they
+ * actively track a shot once it's struck rather than reacting only on arrival.
+ */
+function decideGoalkeeper(player: PlayerState, config: AgentConfig, state: MatchState): Command {
+  const { personality: pers } = config;
+  const side = player.side;
+  const goalX = goalXFor(side);
+  const dir = attackDir(side); // points away from the own goal, into the pitch
+
+  if (player.hasBall) {
+    const teammates = teammatesOf(state, side, player.id);
+    const opponents = opponentsOf(state, side);
+    const pass = bestPassTarget(player, side, teammates, opponents, Math.max(pers.passDirectness, 0.5));
+    if (!pass) return { type: "MOVE_TO", target: player.pos, sprint: false };
+    const laneOpen = !opponents.some((o) => distToSegment(o.pos, player.pos, pass.target.pos) < 4);
+    return {
+      type: "GK_DISTRIBUTE",
+      targetPlayerId: pass.target.id,
+      method: laneOpen && dist(player.pos, pass.target.pos) > 15 ? "KICK" : "THROW",
+    };
+  }
+
+  // React to a shot heading at this goal while it's still in flight — track toward where it's
+  // going instead of standing still until it's already arrived (shots now take a few ticks to
+  // resolve specifically so this reaction has time to matter).
+  const flight = state.ball.flight;
+  if (flight && flight.kind === "SHOT" && Math.abs(flight.to.x - goalX) < 6) {
+    return { type: "MOVE_TO", target: clampToPitch({ x: flight.to.x, y: flight.to.y }), sprint: true };
+  }
+
+  // A loose ball right in the box is fair game to rush out and claim; anything further is left
+  // to the outfield defenders — a keeper shouldn't sprint upfield for a 50-50 ball.
+  if (!state.ball.ownerId && !state.ball.flight) {
+    const d = dist(player.pos, state.ball.pos);
+    if (d < GK_CLAIM_RADIUS && Math.abs(state.ball.pos.x - goalX) < PITCH.penaltyBoxX + 4) {
+      return { type: "MOVE_TO", target: clampToPitch(state.ball.pos), sprint: true };
+    }
+  }
+
+  // Otherwise, hold position on the angle: come off the line more when the danger is distant,
+  // narrow the stance (hug the center) as it gets closer.
+  const ballDistToGoal = Math.abs(goalX - state.ball.pos.x);
+  const nearGoal = clamp(1 - ballDistToGoal / 45, 0, 1); // 0 = far away, 1 = right on the line
+  const offLine = GK_MAX_OFF_LINE * (0.35 + nearGoal * 0.65) * (0.6 + pers.discipline * 0.5);
+  const shrink = 0.35 + nearGoal * 0.35;
+  const target = {
+    x: clamp(goalX + dir * offLine, goalX + dir * 0.5, goalX + dir * (GK_MAX_OFF_LINE + 3)),
+    y: clampToPitch({ x: 0, y: state.ball.pos.y }).y * shrink,
+  };
+  return { type: "MOVE_TO", target: clampToPitch(target), sprint: nearGoal > 0.5 };
+}
+
 export function decide(player: PlayerState, config: AgentConfig, state: MatchState): Command {
+  if (player.role === "GK") {
+    return decideGoalkeeper(player, config, state);
+  }
+
   const { personality: pers } = config;
   const side = player.side;
   const teammates = teammatesOf(state, side, player.id);
@@ -98,17 +162,6 @@ export function decide(player: PlayerState, config: AgentConfig, state: MatchSta
 
   // --- 1. In possession ---
   if (player.hasBall) {
-    if (player.role === "GK") {
-      const pass = bestPassTarget(player, side, teammates, opponents, Math.max(pers.passDirectness, 0.5));
-      if (!pass) return { type: "MOVE_TO", target: player.pos, sprint: false };
-      const laneOpen = !opponents.some((o) => distToSegment(o.pos, player.pos, pass.target.pos) < 4);
-      return {
-        type: "GK_DISTRIBUTE",
-        targetPlayerId: pass.target.id,
-        method: laneOpen && dist(player.pos, pass.target.pos) > 15 ? "KICK" : "THROW",
-      };
-    }
-
     const dGoal = goalDist(player, side);
     const shootRange = BASE_SHOOT_RANGE[player.role] * (0.5 + pers.shootBoldness * 0.55);
     const underPressure = pressure < 6 - pers.aggression * 2.5;
@@ -152,8 +205,9 @@ export function decide(player: PlayerState, config: AgentConfig, state: MatchSta
       const push = pers.discipline > 0.6 ? 0 : 3;
       return { type: "MOVE_TO", target: clampToPitch({ x: slot.x + dir * push, y: slot.y }), sprint: false };
     }
-    // GK sweeps slightly toward the ball's y.
-    return { type: "MOVE_TO", target: { x: slot.x, y: clampToPitch({ x: 0, y: state.ball.pos.y }).y * 0.3 }, sprint: false };
+    // Unreachable in practice (GK short-circuits at the top of decide(), and DEF/MID/FWD1/FWD2
+    // are all handled above) — kept only as a defensive fallback.
+    return { type: "MOVE_TO", target: slot, sprint: false };
   }
 
   // --- 3. Opponent in possession (defend) ---
@@ -169,7 +223,7 @@ export function decide(player: PlayerState, config: AgentConfig, state: MatchSta
       }
       return { type: "PRESS_BALL", intensity: Math.min(1, pers.aggression + 0.1) };
     }
-    if (player.role === "DEF" || player.role === "MID" || player.role === "GK") {
+    if (player.role === "DEF" || player.role === "MID") {
       const danger = nearestDangerousOpponent(player, opponents, side);
       if (danger) {
         return { type: "MARK", targetPlayerId: danger.id, tightness: pers.discipline > 0.55 ? "TIGHT" : "LOOSE" };

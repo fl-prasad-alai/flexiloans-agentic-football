@@ -51,6 +51,23 @@ export default function MatchPage() {
   const goalHoldRef = useRef(false);
   const [tickEvents, setTickEvents] = useState<MatchEvent[]>([]);
 
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    const onChange = () => setIsFullscreen(document.fullscreenElement === contentRef.current);
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+
+  function toggleFullscreen() {
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    } else {
+      contentRef.current?.requestFullscreen().catch(() => {});
+    }
+  }
+
   useEffect(() => {
     const id = setInterval(() => {
       const rt = runtimeRef.current;
@@ -121,6 +138,8 @@ export default function MatchPage() {
   return (
     <div data-theme={pending.theme} className="flex-1 flex flex-col" style={{ background: "var(--stadium-bg-a)" }}>
       <div
+        ref={contentRef}
+        data-theme={pending.theme}
         className="flex-1 flex flex-col gap-4 max-w-7xl mx-auto w-full px-4 py-6"
         style={{
           background: `radial-gradient(circle at 50% -10%, var(--stadium-bg-b), var(--stadium-bg-a))`,
@@ -134,6 +153,8 @@ export default function MatchPage() {
           onSpeedChange={setSpeed}
           onTogglePause={togglePause}
           onExit={() => router.push("/play")}
+          isFullscreen={isFullscreen}
+          onToggleFullscreen={toggleFullscreen}
         />
 
         <div className="flex-1 grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4 min-h-[520px]">
