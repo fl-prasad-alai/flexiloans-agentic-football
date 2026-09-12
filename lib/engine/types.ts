@@ -100,6 +100,10 @@ export type BallInFlight = {
   kind: "PASS" | "SHOT" | "CLEARANCE" | "THROW";
   ownerOnArrival?: string; // playerId who should receive it, if any
   aim?: Corner;
+  /** Renderer-only metadata (doesn't affect resolution): shot power and the original pass/distribute flavor, used to shape the 3D arc. */
+  power?: number;
+  passType?: PassType;
+  distributeMethod?: DistributeMethod;
 };
 
 export interface BallState {
@@ -142,6 +146,9 @@ export interface MatchState {
   players: PlayerState[];
   events: MatchEvent[];
   possession: Side | null;
+  /** Set instead of restarting play immediately on a GOAL, so the ball visibly rests in the net
+   * for a beat before kickoff resets everyone — consumed at the top of the next tickMatch(). */
+  pendingKickoff: { side: Side } | null;
   finished: boolean;
   paused: boolean;
 }

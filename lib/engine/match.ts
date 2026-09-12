@@ -72,6 +72,7 @@ export function initMatch(setup: MatchSetup): MatchRuntime {
     players,
     events: [],
     possession: null,
+    pendingKickoff: null,
     finished: false,
     paused: false,
   };
@@ -148,7 +149,7 @@ function movementTargetFor(player: PlayerState, cmd: Command, state: MatchState)
 }
 
 function flightProgressStep(kind: BallInFlight["kind"], passType?: string, method?: string): number {
-  if (kind === "SHOT") return 1;
+  if (kind === "SHOT") return 0.32; // spread over ~3 ticks so the ball is visibly seen approaching goal
   if (kind === "CLEARANCE") return 0.55;
   if (passType === "THROUGH") return 0.6;
   if (passType === "AERIAL") return 0.45;
@@ -170,6 +171,15 @@ export function tickMatch(runtime: MatchRuntime): MatchEvent[] {
   };
   state.tick += 1;
   state.minute = minuteOf(state.tick, state.totalTicks);
+
+  // --- Consume a deferred kickoff (set by resolveShot on a GOAL) ---
+  // Held back a tick so the ball is seen resting in the net during the goal celebration instead
+  // of teleporting straight to the center circle the instant it crosses the line.
+  if (state.pendingKickoff) {
+    const { side } = state.pendingKickoff;
+    state.pendingKickoff = null;
+    kickoff(state, side, state.totalTicks, home, away, rng, false);
+  }
 
   // --- Advance any ball currently in flight ---
   if (state.ball.flight) {
@@ -226,8 +236,7 @@ export function tickMatch(runtime: MatchRuntime): MatchEvent[] {
       const aimPoint = cornerTarget(cmd.aim, ballOwner.side);
       ballOwner.hasBall = false;
       state.ball.ownerId = null;
-      state.ball.flight = { from: ballOwner.pos, to: aimPoint, progress: 0, kind: "SHOT", aim: cmd.aim };
-      (state.ball.flight as BallInFlight & { power?: number }).power = cmd.power;
+      state.ball.flight = { from: ballOwner.pos, to: aimPoint, progress: 0, kind: "SHOT", aim: cmd.aim, power: cmd.power };
     } else if (cmd.type === "PASS" || cmd.type === "GK_DISTRIBUTE") {
       const targetId = cmd.type === "PASS" ? cmd.targetPlayerId : cmd.targetPlayerId;
       const targetPlayer = state.players.find((p) => p.id === targetId);
@@ -241,6 +250,8 @@ export function tickMatch(runtime: MatchRuntime): MatchEvent[] {
           progress: 0,
           kind,
           ownerOnArrival: targetPlayer.id,
+          passType: cmd.type === "PASS" ? cmd.passType : undefined,
+          distributeMethod: cmd.type === "GK_DISTRIBUTE" ? cmd.method : undefined,
         };
       }
     }
@@ -248,7 +259,7 @@ export function tickMatch(runtime: MatchRuntime): MatchEvent[] {
   }
 
   // --- Loose-ball pickup check ---
-  if (!state.ball.ownerId && !state.ball.flight) {
+  if (!state.ball.ownerId && !state.ball.flight && !state.pendingKickoff) {
     let closest: PlayerState | null = null;
     let closestD = Infinity;
     for (const p of state.players) {
@@ -280,11 +291,16 @@ export function tickMatch(runtime: MatchRuntime): MatchEvent[] {
       if (cmd.type === "INTERCEPT") chance = clamp01(0.3 + config.personality.aggression * 0.2);
       if (cmd.type === "PRESS_BALL") chance = clamp01(0.18 + config.personality.aggression * 0.15);
       if (rng() < chance) {
+        // A won challenge spills the ball loose between the two players rather than snapping
+        // possession straight to the tackler — a real 50-50 duel ends in a scramble, not an
+        // instant swap. Whoever gets there first on a following tick (either side) picks it up
+        // via the ordinary loose-ball check.
         carrier.hasBall = false;
-        player.hasBall = true;
-        state.ball.ownerId = player.id;
-        state.ball.pos = player.pos;
-        state.possession = player.side;
+        state.ball.ownerId = null;
+        state.possession = null;
+        const midX = (carrier.pos.x + player.pos.x) / 2 + (rng() - 0.5) * 2;
+        const midY = (carrier.pos.y + player.pos.y) / 2 + (rng() - 0.5) * 2;
+        state.ball.pos = clampToPitch({ x: midX, y: midY });
         emit(makeEvent(state.tick, state.totalTicks, "TACKLE", renderCommentary("TACKLE", { player: player.name }, rng), player.side, player.id));
         break;
       }
@@ -377,7 +393,7 @@ function resolveShot(
   const defendingSide: Side = shooterSide === "home" ? "away" : "home";
   const keeper = state.players.find((p) => p.side === defendingSide && p.role === "GK")!;
 
-  const onTargetChance = clamp01(0.42 + power * 0.2);
+  const onTargetChance = clamp01(0.28 + power * 0.1);
   const onTarget = rng() < onTargetChance;
 
   if (!onTarget) {
@@ -400,7 +416,10 @@ function resolveShot(
   }
 
   const keeperDist = dist(keeper.pos, flight.to);
-  const saveChance = clamp01(0.74 - keeperDist * 0.05 - power * 0.14);
+  // The keeper now actively tracks an incoming shot (see decideGoalkeeper in decide.ts), so
+  // keeperDist alone under-punishes a well-struck shot — power matters much more here than it
+  // used to, since a well-positioned keeper can still be beaten by pace/placement.
+  const saveChance = clamp01(0.72 - keeperDist * 0.02 - power * 0.2);
   const saved = rng() < saveChance;
 
   if (saved) {
@@ -413,11 +432,13 @@ function resolveShot(
     return;
   }
 
-  // GOAL.
+  // GOAL. Leave the ball resting at the net (no owner, no flight) and defer the actual kickoff
+  // reset a tick — see the pendingKickoff consumption at the top of tickMatch().
   state.score[shooterSide] += 1;
   const team = shooterSide === "home" ? home : away;
+  state.possession = null;
+  state.pendingKickoff = { side: defendingSide };
   emit(makeEvent(state.tick, state.totalTicks, "GOAL", renderCommentary("GOAL", { player: shooter?.name, team }, rng), shooterSide, shooter?.id));
-  kickoff(state, defendingSide, state.totalTicks, home, away, rng, false);
 }
 
 function clamp01(n: number): number {

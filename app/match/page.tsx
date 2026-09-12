@@ -1,14 +1,24 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { CommentaryFeed } from "@/components/CommentaryFeed";
 import { GoalFlash } from "@/components/GoalFlash";
-import { Pitch } from "@/components/Pitch";
 import { ScoreHUD } from "@/components/ScoreHUD";
 import { initMatch, tickMatch, type MatchRuntime } from "@/lib/engine/match";
-import type { MatchState, TeamConfig } from "@/lib/engine/types";
+import type { MatchEvent, MatchState, TeamConfig } from "@/lib/engine/types";
 import { useMatchSetupStore } from "@/lib/store/matchSetupStore";
+
+// Three.js needs a real DOM/WebGL context, so the 3D pitch is loaded client-only.
+const Pitch3D = dynamic(() => import("@/components/three/Pitch3D"), {
+  ssr: false,
+  loading: () => (
+    <div className="w-full h-full grid place-items-center text-sm" style={{ color: "var(--text-dim)" }}>
+      Loading pitch…
+    </div>
+  ),
+});
 
 const BASE_INTERVAL_MS = 650;
 
@@ -36,19 +46,50 @@ export default function MatchPage() {
   const [speed, setSpeed] = useState(1);
   const [goalFlash, setGoalFlash] = useState<{ key: number; side: "home" | "away"; text: string } | null>(null);
   const goalTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // True while play is held for a goal celebration specifically (as opposed to the user's own
+  // pause button) — lets the auto-resume below back off if the user pauses during the flash.
+  const goalHoldRef = useRef(false);
+  const [tickEvents, setTickEvents] = useState<MatchEvent[]>([]);
+
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    const onChange = () => setIsFullscreen(document.fullscreenElement === contentRef.current);
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+
+  function toggleFullscreen() {
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    } else {
+      contentRef.current?.requestFullscreen().catch(() => {});
+    }
+  }
 
   useEffect(() => {
     const id = setInterval(() => {
       const rt = runtimeRef.current;
       if (!rt || rt.state.finished || rt.state.paused) return;
       const events = tickMatch(rt);
-      setMatchState({ ...rt.state });
       const goal = events.find((e) => e.kind === "GOAL");
       if (goal && goal.side) {
+        rt.state.paused = true;
+        goalHoldRef.current = true;
         if (goalTimeoutRef.current) clearTimeout(goalTimeoutRef.current);
         setGoalFlash({ key: goal.tick, side: goal.side, text: goal.text });
-        goalTimeoutRef.current = setTimeout(() => setGoalFlash(null), 2400);
+        goalTimeoutRef.current = setTimeout(() => {
+          setGoalFlash(null);
+          if (goalHoldRef.current && runtimeRef.current) {
+            goalHoldRef.current = false;
+            runtimeRef.current.state.paused = false;
+            setMatchState({ ...runtimeRef.current.state });
+          }
+        }, 2400);
       }
+      setMatchState({ ...rt.state });
+      setTickEvents(events);
     }, BASE_INTERVAL_MS / speed);
     return () => clearInterval(id);
   }, [speed]);
@@ -62,12 +103,16 @@ export default function MatchPage() {
   function togglePause() {
     const rt = runtimeRef.current;
     if (!rt) return;
+    goalHoldRef.current = false; // a manual toggle always takes priority over the goal auto-pause
     rt.state.paused = !rt.state.paused;
     setMatchState({ ...rt.state });
   }
 
   function rematch() {
     if (!pending) return;
+    if (goalTimeoutRef.current) clearTimeout(goalTimeoutRef.current);
+    goalHoldRef.current = false;
+    setGoalFlash(null);
     const fresh = freshRuntime(pending);
     runtimeRef.current = fresh;
     setMatchState({ ...fresh.state });
@@ -93,6 +138,8 @@ export default function MatchPage() {
   return (
     <div data-theme={pending.theme} className="flex-1 flex flex-col" style={{ background: "var(--stadium-bg-a)" }}>
       <div
+        ref={contentRef}
+        data-theme={pending.theme}
         className="flex-1 flex flex-col gap-4 max-w-7xl mx-auto w-full px-4 py-6"
         style={{
           background: `radial-gradient(circle at 50% -10%, var(--stadium-bg-b), var(--stadium-bg-a))`,
@@ -106,6 +153,8 @@ export default function MatchPage() {
           onSpeedChange={setSpeed}
           onTogglePause={togglePause}
           onExit={() => router.push("/play")}
+          isFullscreen={isFullscreen}
+          onToggleFullscreen={toggleFullscreen}
         />
 
         <div className="flex-1 grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4 min-h-[520px]">
@@ -113,7 +162,14 @@ export default function MatchPage() {
             className="relative rounded-2xl border overflow-hidden"
             style={{ borderColor: "var(--hud-border)", background: "var(--crowd)" }}
           >
-            <Pitch players={matchState.players} ball={matchState.ball} home={home} away={away} />
+            <Pitch3D
+              matchState={matchState}
+              newEvents={tickEvents}
+              home={home}
+              away={away}
+              theme={pending.theme}
+              tickIntervalMs={BASE_INTERVAL_MS / speed}
+            />
             {goalFlash && <GoalFlash key={goalFlash.key} team={goalFlash.side === "home" ? home : away} text={goalFlash.text} />}
           </div>
           <CommentaryFeed events={matchState.events} />
