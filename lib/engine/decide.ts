@@ -27,10 +27,10 @@ function goalDist(player: PlayerState, side: Side): number {
 
 const BASE_SHOOT_RANGE: Record<PlayerState["role"], number> = {
   GK: 0,
-  DEF: 20,
-  MID: 24,
-  FWD1: 28,
-  FWD2: 28,
+  DEF: 15,
+  MID: 19,
+  FWD1: 23,
+  FWD2: 23,
 };
 
 function pickAim(player: PlayerState, side: Side, opponents: PlayerState[]): Corner {
@@ -118,7 +118,9 @@ export function decide(player: PlayerState, config: AgentConfig, state: MatchSta
       if (pass) return { type: "PASS", targetPlayerId: pass.target.id, passType: pass.type };
     }
 
-    if (dGoal <= shootRange) {
+    // Only a clean, unpressured sight of goal is taken immediately — a marker right on top of
+    // them means looking for a pass instead of forcing a contested shot (tiki-taka buildup).
+    if (dGoal <= shootRange && !underPressure) {
       return { type: "SHOOT", aim: pickAim(player, side, opponents), power: 0.45 + pers.shootBoldness * 0.55 };
     }
 

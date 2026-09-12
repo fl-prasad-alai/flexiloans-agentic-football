@@ -72,6 +72,7 @@ export function initMatch(setup: MatchSetup): MatchRuntime {
     players,
     events: [],
     possession: null,
+    pendingKickoff: null,
     finished: false,
     paused: false,
   };
@@ -148,7 +149,7 @@ function movementTargetFor(player: PlayerState, cmd: Command, state: MatchState)
 }
 
 function flightProgressStep(kind: BallInFlight["kind"], passType?: string, method?: string): number {
-  if (kind === "SHOT") return 1;
+  if (kind === "SHOT") return 0.32; // spread over ~3 ticks so the ball is visibly seen approaching goal
   if (kind === "CLEARANCE") return 0.55;
   if (passType === "THROUGH") return 0.6;
   if (passType === "AERIAL") return 0.45;
@@ -170,6 +171,15 @@ export function tickMatch(runtime: MatchRuntime): MatchEvent[] {
   };
   state.tick += 1;
   state.minute = minuteOf(state.tick, state.totalTicks);
+
+  // --- Consume a deferred kickoff (set by resolveShot on a GOAL) ---
+  // Held back a tick so the ball is seen resting in the net during the goal celebration instead
+  // of teleporting straight to the center circle the instant it crosses the line.
+  if (state.pendingKickoff) {
+    const { side } = state.pendingKickoff;
+    state.pendingKickoff = null;
+    kickoff(state, side, state.totalTicks, home, away, rng, false);
+  }
 
   // --- Advance any ball currently in flight ---
   if (state.ball.flight) {
@@ -249,7 +259,7 @@ export function tickMatch(runtime: MatchRuntime): MatchEvent[] {
   }
 
   // --- Loose-ball pickup check ---
-  if (!state.ball.ownerId && !state.ball.flight) {
+  if (!state.ball.ownerId && !state.ball.flight && !state.pendingKickoff) {
     let closest: PlayerState | null = null;
     let closestD = Infinity;
     for (const p of state.players) {
@@ -378,7 +388,7 @@ function resolveShot(
   const defendingSide: Side = shooterSide === "home" ? "away" : "home";
   const keeper = state.players.find((p) => p.side === defendingSide && p.role === "GK")!;
 
-  const onTargetChance = clamp01(0.42 + power * 0.2);
+  const onTargetChance = clamp01(0.2 + power * 0.08);
   const onTarget = rng() < onTargetChance;
 
   if (!onTarget) {
@@ -401,7 +411,7 @@ function resolveShot(
   }
 
   const keeperDist = dist(keeper.pos, flight.to);
-  const saveChance = clamp01(0.74 - keeperDist * 0.05 - power * 0.14);
+  const saveChance = clamp01(0.93 - keeperDist * 0.02 - power * 0.06);
   const saved = rng() < saveChance;
 
   if (saved) {
@@ -414,11 +424,13 @@ function resolveShot(
     return;
   }
 
-  // GOAL.
+  // GOAL. Leave the ball resting at the net (no owner, no flight) and defer the actual kickoff
+  // reset a tick — see the pendingKickoff consumption at the top of tickMatch().
   state.score[shooterSide] += 1;
   const team = shooterSide === "home" ? home : away;
+  state.possession = null;
+  state.pendingKickoff = { side: defendingSide };
   emit(makeEvent(state.tick, state.totalTicks, "GOAL", renderCommentary("GOAL", { player: shooter?.name, team }, rng), shooterSide, shooter?.id));
-  kickoff(state, defendingSide, state.totalTicks, home, away, rng, false);
 }
 
 function clamp01(n: number): number {
